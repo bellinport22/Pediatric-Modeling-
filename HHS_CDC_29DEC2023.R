@@ -1,0 +1,324 @@
+# Processing FluServ Influenza Hospitalization data
+# December 2023
+
+# URL: https://gis.cdc.gov/GRASP/Fluview/FluHospRates.html
+
+# downloaded data from 2019 - 2023 flu seasons
+# downloaded data from all FluSurv networks and for CT, NY (close to MA)
+# deleted the top two rows in excel
+
+library(dplyr)
+library(tidyr)
+library(zoo)
+library(lubridate)
+library(ggplot2)
+library(tidyverse)
+
+##########################################################
+### import and clean CDC FluSurv data ###
+##########################################################
+
+
+df = read.csv("C:\\Users\\emily\\OneDrive\\Desktop\\ERDC\\EPH\\Military Healthcare\\Paper 2\\Data\\FluSurv\\CDC_FluSurv_All_CT_NY_2019_2023.csv")
+# 16352 obs of 12 variables
+
+# delete rows: AGE.ADJUSTED.CUMULATIVE.RATE, AGE.ADJUSTED.WEEKLY.RATE
+# no data for these columns
+df = select(df, -AGE.ADJUSTED.CUMULATIVE.RATE, -AGE.ADJUSTED.WEEKLY.RATE)
+# now 10 variables
+
+# the raw data includes age, sex, race distributions
+# here, we are primarily interested in age (pediatric versus adult)
+# so, keep rows where SEX.CATEGORY == "overall" and RACE.CATEGORY == "Overal"
+# noting that it might be interesting to include this sex/race data for future iterations of this work
+df2 = filter(df, SEX.CATEGORY == "Overall") # now, 15072 obs
+df2 = filter(df2, RACE.CATEGORY == "Overall") # now, 11932 obs
+
+
+# for AGE.CATEGORY, keep only == "< 18" | ">= 18" | "Overall"
+table(df2$AGE.CATEGORY)
+str(df2$AGE.CATEGORY) # chr
+df2 = filter(df2, AGE.CATEGORY == "Overall" | AGE.CATEGORY =="< 18" | AGE.CATEGORY == ">= 18") # now, 1884 obs
+
+
+# pivot from long to wide for AGE.CATEGORY for CUMULATIVE.RATE and WEEKLY.RATE values
+df3 = df2 %>%
+  pivot_wider(
+    names_from = AGE.CATEGORY,
+    values_from = c(CUMULATIVE.RATE, WEEKLY.RATE)
+  )
+
+# rename variables to avoid issues with spaces in column name
+# include "Pediatric" and "Adult" rather than < 18, >= 18
+# delete columns with old variable names
+df3$WEEKLY.RATE.PEDIATRIC = df3$`WEEKLY.RATE_< 18`
+df3$WEEKLY.RATE.ADULT = df3$`WEEKLY.RATE_>= 18`
+df3$WEEKLY.RATE.OVERALL = df3$WEEKLY.RATE_Overall
+df3$CUMULATIVE.RATE.PEDIATRIC = df3$`CUMULATIVE.RATE_< 18`
+df3$CUMULATIVE.RATE.ADULT = df3$`CUMULATIVE.RATE_>= 18`
+df3$CUMULATIVE.RATE.OVERALL = df3$CUMULATIVE.RATE_Overall
+df3 = select(df3, -`WEEKLY.RATE_< 18`, -`WEEKLY.RATE_>= 18`, -WEEKLY.RATE_Overall, -`CUMULATIVE.RATE_< 18`, -`CUMULATIVE.RATE_>= 18`, -CUMULATIVE.RATE_Overall)
+# now, 13 vars
+
+
+# set columns 8:13 to numeric
+str(df3$WEEKLY.RATE.PEDIATRIC)
+print(df3[,8:13])
+df3[, 8:13] <- lapply(df3[, 8:13], as.numeric)
+
+
+# save the dataframe as cdc
+cdc = df3
+
+rm(df)
+rm(df2)
+rm(df3)
+
+
+#### set years, weeks to calendar date
+cdc$date = ISOdate(cdc$MMWR.YEAR, 1, 1) + weeks(cdc$MMWR.WEEK -1) + days(1)
+cdc$date = as.Date(cdc$date)
+print(cdc$date)
+
+
+# Here, include only at full flusurv network data
+# rather than NY, CT FluSurv data
+cdc2 = filter(cdc, CATCHMENT == "Entire Network") # now, 157 obs
+cdc2$date
+diff(cdc2$date)
+# differences of 7 days (sometimes 8) or 161 days for annual gap in data during non reporting period
+
+# Fill in missing dates in CDC data with zero
+# only include flu season; no reports from week 18 - 39 for each year
+# need to create rows for weeks 18 - 39 and fill missing data with 0
+
+# Beth -- I am stuck here. Do you mind taking a look at creating new rows
+# for missing weeks and filling with zero?
+# I found examples using padr and tidyverse libraries below but can't get through errors
+
+library(padr)
+# Specify end_val to go all the way to sys.Date and add 1 to include sys.Date
+cdc3 <- pad(cdc2, interval = "week", end_val = Sys.Date()+1)
+cdc3 <- fill_by_value(cdc3, value = 0)
+
+library(tidyverse)
+cdc2$date = as.POSIXct(cdc2$date)
+cdc3 <- cdc2 %>%
+  complete(timestamp = seq.POSIXt(min(date), max(date), by = "week"), 
+          cdc2[,8:13])
+
+
+cdc = cdc3
+
+# export csv file
+#write.csv(cdc, .....)
+
+####################################################
+### import HHS Protect data ###
+####################################################
+
+# import HHS Protect data for MA
+hhs = read.csv("C:\\Users\\emily\\OneDrive\\Desktop\\ERDC\\EPH\\Military Healthcare\\Paper 2\\Data\\HHS_COVID_Influenza\\COVID-19_Reported_Patient_Impact_and_Hospital_Capacity_by_Facility_20231228.csv")
+# 953,973 obs of 128 variables
+
+# filter for MA only
+hhs = filter(hhs, state == "MA") # now, 13836 obs
+# earliest collection week is now 03/22/2020 (COVID)
+
+rm(hhs2)
+
+# select only necessary variables for now
+# facility identifiers and 
+hhs2 = hhs %>% select(1:11, previous_day_admission_influenza_confirmed_7_day_sum, 
+                      previous_day_admission_pediatric_covid_confirmed_7_day_sum, 
+                      previous_day_admission_adult_covid_confirmed_7_day_sum)
+
+# set values of -99999 to median of 2 (values of -99999 range from 1 to 3 cases)
+hhs2 = hhs2 %>% 
+  mutate(previous_day_admission_influenza_confirmed_7_day_sum = ifelse(previous_day_admission_influenza_confirmed_7_day_sum == '-999999',2,previous_day_admission_influenza_confirmed_7_day_sum), 
+         previous_day_admission_pediatric_covid_confirmed_7_day_sum= ifelse(previous_day_admission_pediatric_covid_confirmed_7_day_sum == '-999999',2,previous_day_admission_pediatric_covid_confirmed_7_day_sum),
+         previous_day_admission_adult_covid_confirmed_7_day_sum= ifelse(previous_day_admission_adult_covid_confirmed_7_day_sum == '-999999',2,previous_day_admission_adult_covid_confirmed_7_day_sum))
+
+# set collection_week to date
+str(hhs2$collection_week)
+hhs2$date = as.Date(as.character(hhs2$collection_week), tryFormats = "%Y/%m/%d")
+str(hhs2$date)
+
+# arrange by date
+hhs2 = hhs2 %>% arrange(date)
+
+# how many missing values are there?
+summary(hhs2$previous_day_admission_influenza_confirmed_7_day_sum) # 4121 NAs
+summary(hhs2$previous_day_admission_pediatric_covid_confirmed_7_day_sum) # 1027 NAs
+summary(hhs2$previous_day_admission_adult_covid_confirmed_7_day_sum) # 949 NAs
+
+# fill in missing facility data
+# step 1: fill in NAs by median values of same hospital_subtype
+table(hhs$hospital_subtype)
+hhs2 = hhs2 %>% 
+group_by(hospital_subtype, date) %>% 
+  mutate_at(vars(previous_day_admission_influenza_confirmed_7_day_sum,
+                 previous_day_admission_pediatric_covid_confirmed_7_day_sum,
+                 previous_day_admission_adult_covid_confirmed_7_day_sum), 
+            ~replace_na(., 
+                        median(., na.rm = TRUE)))
+
+# how many missing values are there after filling in weekly mean by hospital_subtype?
+summary(hhs2$previous_day_admission_influenza_confirmed_7_day_sum) # 3157 NAs
+summary(hhs2$previous_day_admission_pediatric_covid_confirmed_7_day_sum) # 933 NAs
+summary(hhs2$previous_day_admission_adult_covid_confirmed_7_day_sum) # 875 NAs
+
+# step 2: forward fill remaining missing values by hospital facility
+
+
+
+# Option 3: use similar facility (by size, type) (Franciscan, Shriner's example)
+length(table(hhs$hospital_name))
+
+
+
+# group by week to estimate state-level influenza, covid admissions
+hhs3 = hhs2 %>% 
+  group_by(date) %>% 
+  summarise(previous_day_admission_influenza_confirmed_7_day_sum_MA = sum(previous_day_admission_influenza_confirmed_7_day_sum), 
+            previous_day_admission_pediatric_covid_confirmed_7_day_sum_MA = sum(previous_day_admission_pediatric_covid_confirmed_7_day_sum),
+            previous_day_admission_adult_covid_confirmed_7_day_sum_MA = sum(previous_day_admission_adult_covid_confirmed_7_day_sum))
+# 195 obs of 4 variables
+
+# how many days between
+daysbetween = diff(hhs3$date) # 7 for all
+
+
+
+
+
+# group by week and hospital_subtype to estimate state-level influenza, covid admissions
+hhs4 = hhs2 %>% 
+  group_by(collection_week, hospital_subtype) %>% 
+  summarise(previous_day_admission_influenza_confirmed_7_day_sum_MA = sum(previous_day_admission_influenza_confirmed_7_day_sum), 
+            previous_day_admission_pediatric_covid_confirmed_7_day_sum_MA = sum(previous_day_admission_pediatric_covid_confirmed_7_day_sum),
+            previous_day_admission_adult_covid_confirmed_7_day_sum_MA = sum(previous_day_admission_adult_covid_confirmed_7_day_sum))
+# 969 obs of 4 variables
+
+# grouped bar graph by hospital subtype 
+# Stacked
+library(ggplot2)
+ggplot(hhs4, aes(fill=hospital_subtype, y=previous_day_admission_influenza_confirmed_7_day_sum_MA, x=date)) + 
+  geom_bar(position="stack", stat="identity")
+
+
+
+#########################################################################################
+# join cdc flusurv data to hhs3 (grouped by week) for entire FluSurv catchment area
+#########################################################################################
+
+# Join CDC and HHS by nearest date
+# https://stackoverflow.com/questions/23342647/how-to-match-by-nearest-date-from-two-data-frames 
+library(data.table)
+
+str(hhs3)
+hhs5 = setDT(hhs3) ## convert to data.table by reference
+str(hhs5)
+cdc3 = setDT(cdc2)
+
+hhs5[, date1 := date]  ## create a duplicate of 'date1'
+cdc3[, date1 := date]  ## create a duplicate of 'date1'
+
+setkey(hhs5, date1)    ## set the column to perform the join on
+setkey(cdc3, date1)    ## same as above
+
+# join CDC FluSurv to HHS facility data by closest dates rather than exact dates
+hhs_cdc = cdc3[hhs5, roll=Inf] ## perform rolling join
+
+
+# double check days between weeks
+# testing = diff(hhs_cdc$date)
+
+# Note: left_join didn't work because dates didn't perfectly align
+# hhs_cdc = left_join(hhs3, cdc2, by = c('date')) 
+# many NAs
+
+#########################################################################################
+### estimates for pediatric flu hosp based on FluSurv ###
+########################################################################################
+
+### Approach December 28, 2023
+
+# version 1
+# estimated hosp > 18 = total HHS confirmed hosp * (adult case rate/100000)
+# estimated hosp < 18 = total HHS confirmed hosp * (ped case rate/100000)
+# scaling factor = (sum of estimated hosp / total HHS hospitalizations)
+
+hhs_cdc$adult_hosp_flu_cases = hhs_cdc$previous_day_admission_influenza_confirmed_7_day_sum_MA * (hhs_cdc$WEEKLY.RATE.ADULT/100000)
+hhs_cdc$pediatric_hosp_flu_cases = hhs_cdc$previous_day_admission_influenza_confirmed_7_day_sum_MA * (hhs_cdc$WEEKLY.RATE.PEDIATRIC/100000)
+
+hhs_cdc$adult_hosp_flu_scale = (hhs_cdc$adult_hosp_flu_cases) / (hhs_cdc$adult_hosp_flu_cases + hhs_cdc$pediatric_hosp_flu_cases)
+hhs_cdc$pediatric_hosp_flu_scale = (hhs_cdc$pediatric_hosp_flu_cases) / (hhs_cdc$adult_hosp_flu_cases + hhs_cdc$pediatric_hosp_flu_cases)
+
+hhs_cdc$adult_hosp_flu_est = hhs_cdc$adult_hosp_flu_scale * hhs_cdc$previous_day_admission_influenza_confirmed_7_day_sum_MA
+hhs_cdc$pediatric_hosp_flu_est = hhs_cdc$pediatric_hosp_flu_scale * hhs_cdc$previous_day_admission_influenza_confirmed_7_day_sum_MA
+
+summary(hhs_cdc$pediatric_hosp_flu_est) # 97 NAs
+hist(hhs_cdc$pediatric_hosp_flu_est) # max = 3500
+hist(hhs_cdc$previous_day_admission_influenza_confirmed_7_day_sum_MA) # max = 800
+
+# export outcome CSV files
+
+
+# Version 2 from beth (similar to dinesh)
+# only using CDC FluSurv, not HHS data
+# prefer version 1 because version 2 assumes that FluSurv rates from other states apply to MA
+# cannot be as reliably scaled to state, facility levels. 
+# Differing vaccination rates between states, for instance, could led to skewed estimates using only FluSurv.
+# can always come back to this approach...
+# (pediatric pop < 18 in MA) * case rate, where... 
+# case rate = number of pos cases < 18 / (population/100,000)
+# (adult pop > 18 in MA) * case rate, where... 
+# case rate = number of pos cases > 18 / (population/100,000)
+# sum of adult and pediatric = total hospitalization cases in MA
+# then, scale estimates such that total pos confirmed MA / total estimated MA
+
+
+
+
+##################################################################
+### Exogenous variables ###
+##################################################################
+
+# import outcome csv file or build from df's
+
+#########################################################################################
+### estimates for pediatric flu hosp based on FluSurv ###
+### Approach from week of December 18. 2023 ###
+### OLD but gets same results as version from December 28,2023
+########################################################################################
+
+
+
+# Calculate the total population needed for the given hospitalization rates: 
+# Find the population that would contribute X hospitalizations based on the combined rates:
+# Total population = 765 hospitalizations / (14.5 peds + 12.6 adult hospitalizations per 100,000 population)
+# = (765 / 27.1) = 28.28 hospitalizations per 100,000 population 
+# ??? 28,232 people
+
+#hhs_cdc$WEEKLY.RATE.PEDIATRIC.ADULT = (hhs_cdc$WEEKLY.RATE.PEDIATRIC + hhs_cdc$WEEKLY.RATE.ADULT)
+#summary(hhs_cdc$WEEKLY.RATE.PEDIATRIC.ADULT) # 52 NAs prior to filling in CDC weeks 18 - 39
+
+
+#hhs_cdc$total_population_est = (hhs_cdc$previous_day_admission_influenza_confirmed_7_day_sum_MA / hhs_cdc$WEEKLY.RATE.PEDIATRIC.ADULT)
+#summary(hhs_cdc$total_population_est) # 78 NAs
+
+# Calculate the number of pediatric and adult hospitalizations based on the population and rates: 
+# Using the calculated population, we can find 
+# the expected number of hospitalizations for each age group:
+# Pediatric hospitalizations: 28,232 people * 14.5 hospitalizations per 100,000 population ??? 408
+# Adult hospitalizations: 28,232 people * 12.6 hospitalizations per 100,000 population ??? 355
+
+#hhs_cdc$pediatric_hosp_flu_est = (hhs_cdc$total_population_est) *  (hhs_cdc$WEEKLY.RATE.PEDIATRIC)
+#summary(hhs_cdc$pediatric_hosp_flu_est)
+
+#hhs_cdc$adult_hosp_flu_est = (hhs_cdc$total_population_est) *  (hhs_cdc$WEEKLY.RATE.ADULT)
+#summary(hhs_cdc$adult_hosp_flu_est)
+
+#hhs_cdc$total_hosp_flu_est = hhs_cdc$pediatric_hosp_flu_est + hhs_cdc$adult_hosp_flu_est
+#summary(hhs_cdc$total_hosp_flu_est)
