@@ -96,6 +96,53 @@ diff(cdc2$date)
 # for missing weeks and filling with zero?
 # I found examples using padr and tidyverse libraries below but can't get through errors
 
+#Creating a blank data frame with weeks 1-52 filling data with 0
+template <- data.frame(MMWR.WEEK = rep(1:52, times = 6),   ###repeating sequence 1-52 6 times
+                       MMWR.YEAR = rep(2019:2024, each =52)) ###repeating each year 52 times before going to the next year
+template$WEEKLY.RATE.PEDIATRIC <-  0.0  
+template$WEEKLY.RATE.ADULT <-  0.0
+template$WEEKLY.RATE.OVERALL <-  0.0
+template$CUMULATIVE.RATE.PEDIATRIC <-  0.0
+template$CUMULATIVE.RATE.ADULT <-  0.0
+template$CUMULATIVE.RATE.OVERALL <-  0.0
+
+# Filter the template data frame to include only weeks 18-39
+template <- template%>%
+  filter(MMWR.WEEK<40 , MMWR.WEEK >17)
+
+# Merge the new template data frame with cdc2 
+result <- cdc2%>%
+  full_join(template)
+
+##Order by weeks and year 
+result <- result[order(result$MMWR.YEAR, result$MMWR.WEEK), ]
+
+##fill in the rest of the missing variables
+result$date = ISOdate(result$MMWR.YEAR, 1, 1) + weeks(result$MMWR.WEEK -1) + days(1)
+result$date = as.Date(result$date)
+
+##checking the new difference after adding in all of the missing dates
+diff(result$date) ##cells 158 - 169 are repeated? og data (cdc2) has week 18-23. 
+ ### we could just remove the created data for these rows, just interesting why there is data here but for no other year
+duplicated_result <- result[!duplicated(result$date), ]
+
+result_filled <- duplicated_result %>%
+  fill(CATCHMENT, .direction = "downup") ## this will fill the categorical variables using the values and filling up and down 
+
+result_filled <- result_filled %>%
+  fill(NETWORK, .direction = "downup")
+
+result_filled <- result_filled %>%
+  fill(SEX.CATEGORY, .direction = "downup")
+
+result_filled <- result_filled %>%
+  fill(RACE.CATEGORY, .direction = "downup")
+
+###checking the weeks again
+diff(result_filled$date) ##5 weeks are either 2 or 8 days apart
+
+##################ALTERNATIVES########################
+
 library(padr)
 # Specify end_val to go all the way to sys.Date and add 1 to include sys.Date
 cdc3 <- pad(cdc2, interval = "week", end_val = Sys.Date()+1)
@@ -106,7 +153,6 @@ cdc2$date = as.POSIXct(cdc2$date)
 cdc3 <- cdc2 %>%
   complete(timestamp = seq.POSIXt(min(date), max(date), by = "week"), 
           cdc2[,8:13])
-
 
 cdc = cdc3
 
