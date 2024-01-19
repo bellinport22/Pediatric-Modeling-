@@ -1,0 +1,32 @@
+# Load the 'prophet' library
+library(prophet)
+data <- read_csv("hhs_cdc_1_18_24.csv")
+
+# Assuming 'pediatric_hosp_flu_est' is the target variable
+target_variable <- 'pediatric_hosp_flu_est'
+
+# Create a data frame with 'ds' (date) and 'y' (target variable)
+prophet_data <- data.frame(ds = data$date1, y = data[[target_variable]])
+
+# Split dataset into all even weeks for training and all odd weeks for testing
+train_prophet <- subset(prophet_data, data$`MMWR.WEEK` %% 2 == 0)
+test_prophet <- subset(prophet_data, data$`MMWR.WEEK` %% 2 != 0)
+
+# Train Prophet model with weekly and yearly seasonality
+prophet_model <- prophet(yearly.seasonality = TRUE,weekly.seasonality = FALSE)
+prophet_model <- add_seasonality(prophet_model, name='monthly', period=30.5, fourier.order=5)
+
+# Fit the model
+prophet_model <- fit.prophet(prophet_model, train_prophet)
+
+# Create a data frame with future dates for prediction
+future_prophet <- make_future_dataframe(prophet_model, periods = nrow(test_prophet), freq = 'weeks')
+
+# Predict on the test set
+forecast_prophet <- predict(prophet_model, future_prophet)
+predictions_prophet <- forecast_prophet$yhat[nrow(train_prophet) + 1:nrow(test_prophet)]
+
+predictions_prophet <- predictions_prophet[!is.na(predictions_prophet)]
+
+plot(prophet_model, forecast_prophet, xlabel = 'Date', ylabel = target_variable)
+
