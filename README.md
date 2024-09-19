@@ -1,5 +1,5 @@
 Pediatric-Modeling-
-This page only contains the raw files used in the analysis. 
+This page only contains the raw files cleaned and proccessed to (1) derive an overall pediatric flu hospitalization count estimate in the state of MA and (2) develop a time series forecasting model using FB Prophet to forecast pediatric influenza in the state of MA. 
 
 The files consist of:
 
